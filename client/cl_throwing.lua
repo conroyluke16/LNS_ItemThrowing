@@ -3,6 +3,37 @@ local throwingItem, givingItem = false, false
 local attachedProp, previewProp = nil, nil
 local currentThrowData, currentGiveData = {}, {}
 local initializingThrow = false
+local droppedItems = {}
+
+local function startItemPoint(propId, entity, netId, itemLabel)
+    local coords = GetEntityCoords(entity)
+    local point = lib.points.new({
+        coords = coords,
+        distance = 2.0,
+    })
+
+    
+    local label = itemLabel or 'Weapon'
+
+    function point:onEnter()
+        lib.showTextUI(('[E] Pick Up %s'):format(label), {
+            icon = 'hand-holding', 
+            position = 'left-center'
+        })
+    end
+
+    function point:onExit()
+        lib.hideTextUI()
+    end
+
+    function point:nearby()
+        if IsControlJustPressed(0, 38) then -- [E]
+            TriggerEvent('LNS_ItemThrowing:clientPickupItem', propId)
+        end
+    end
+
+    droppedItems[netId] = point
+end
 
 local function MakeItemThrowable(itemName, propModel, slot)
     if throwingItem or givingItem then return end
@@ -121,7 +152,8 @@ local function MakeItemThrowable(itemName, propModel, slot)
                 local netId = NetworkGetNetworkIdFromEntity(flyingProp)
                 local throwData = {
                     itemName = currentThrowData.itemName,
-                    slot = currentThrowData.slot
+                    slot = currentThrowData.slot,
+                    amount = currentGiveData.count or 1
                 }
 
                 CreateThread(function()
@@ -152,11 +184,13 @@ local function MakeItemThrowable(itemName, propModel, slot)
                         SetEntityCollision(flyingProp, true, true)
 
                         local success = lib.callback.await('LNS_ItemThrowing:createProp', false, {
-                            coords = finalCoords,
-                            itemName = throwData.itemName,
-                            slot = throwData.slot,
-                            netId = netId
-                        })
+    coords = finalCoords,
+    itemName = throwData.itemName,
+    slot = throwData.slot,
+    amount = throwData.amount,
+    netId = netId
+})
+
 
                         if not success and DoesEntityExist(flyingProp) then
                             DeleteEntity(flyingProp)
@@ -176,182 +210,126 @@ local function MakeItemThrowable(itemName, propModel, slot)
     end)
 end
 
-local function StartGiveMode(itemName, slot, count)
+
+
+function StartGiveMode(itemName, slot, count)
     if givingItem or throwingItem then return end
     
+    local inventory = exports.ox_inventory:GetPlayerItems()
+    local slotData = inventory[slot]
+    
+    if not slotData or slotData.count <= 0 or slotData.count < (count or 1) then
+        return lib.notify({description = 'You do not have enough of that item!', type = 'error'})
+    end
+
     local propModel = Settings.ItemModels[itemName]
     if not propModel then
         local nearbyPlayers = lib.getNearbyPlayers(GetEntityCoords(cache.ped), Settings.MaxGiveDistance)
-        if #nearbyPlayers == 0 then
-            return lib.notify({description = 'No nearby players', type = 'error'})
-        end
-        
-        local targetPlayer = nearbyPlayers[1]
-        local targetId = GetPlayerServerId(targetPlayer.id)
-        exports.ox_inventory:giveItemToTarget(targetId, slot, count)
+        if #nearbyPlayers == 0 then return lib.notify({description = 'No nearby players', type = 'error'}) end
+        exports.ox_inventory:giveItemToTarget(GetPlayerServerId(nearbyPlayers[1].id), slot, count)
         return
     end
     
     givingItem = true
     currentGiveData = {itemName = itemName, slot = slot, count = count, propModel = propModel}
-    
     lib.requestModel(propModel, 5000)
     
     previewProp = CreateObject(propModel, 0, 0, 0, false, false, false)
     SetEntityCollision(previewProp, false, false)
     SetEntityAlpha(previewProp, 200, false)
     SetEntityCompletelyDisableCollision(previewProp, false, false)
-    
+
+   
+    SetEntityDrawOutline(previewProp, true)
+    SetEntityDrawOutlineColor(255, 255, 255, 150) 
+   
     local propRotation = 0.0
-    
-    lib.showTextUI('[E] Place Item | [G] Throw Item | [SCROLL] Rotate | [X] Cancel', {
-        position = 'bottom-center',
-        icon = 'hand-holding'
-    })
+    lib.showTextUI('[E] Place Item | [G] Throw Item | [SCROLL] Rotate | [X] Cancel', { position = 'bottom-center', icon = 'hand-holding' })
     
     CreateThread(function()
         local ped = cache.ped
-        local lastHit, wasPlayer = nil, false
         
         while givingItem do
+            Wait(0)
+
+            local inv = exports.ox_inventory:GetPlayerItems()
+            local currentSlotData = inv[currentGiveData.slot]
+
+            if not currentSlotData or currentSlotData.count <= 0 or currentSlotData.count < (currentGiveData.count or 1) then
+                if DoesEntityExist(previewProp) then DeleteEntity(previewProp) end
+                givingItem = false
+                lib.hideTextUI()
+                lib.notify({description = 'Item is no longer available!', type = 'error'})
+                break 
+            end
+
             DisableControlAction(0, 14, true)
             DisableControlAction(0, 15, true)
 
-            if IsDisabledControlPressed(0, 14) then
-                propRotation = (propRotation - 2.0) % 360
-            elseif IsDisabledControlPressed(0, 15) then
-                propRotation = (propRotation + 2.0) % 360
-            end
+            if IsDisabledControlPressed(0, 14) then propRotation = (propRotation - 2.0) % 360
+            elseif IsDisabledControlPressed(0, 15) then propRotation = (propRotation + 2.0) % 360 end
 
             local camCoords = GetGameplayCamCoord()
             local camRot = GetGameplayCamRot(0)
             local radRot = vec3(math.rad(camRot.x), math.rad(camRot.y), math.rad(camRot.z))
             local dir = vec3(-math.sin(radRot.z) * math.abs(math.cos(radRot.x)), math.cos(radRot.z) * math.abs(math.cos(radRot.x)), math.sin(radRot.x))
-            local endCoords = camCoords + (dir * 10.0)
-            local ray = StartShapeTestRay(camCoords.x, camCoords.y, camCoords.z, endCoords.x, endCoords.y, endCoords.z, -1, ped, 0)
+            local ray = StartShapeTestRay(camCoords.x, camCoords.y, camCoords.z, camCoords.x + (dir.x * 10.0), camCoords.y + (dir.y * 10.0), camCoords.z + (dir.z * 10.0), -1, ped, 0)
             local _, hit, coords, _, hitEntity = GetShapeTestResult(ray)
             
             if hit then
                 SetEntityCoords(previewProp, coords.x, coords.y, coords.z, false, false, false, false)
                 SetEntityRotation(previewProp, 0.0, 0.0, propRotation, 2, true)
 
-                local isPlayer = false
-                if DoesEntityExist(hitEntity) then
-                    if hitEntity ~= lastHit then
-                        isPlayer = IsPedAPlayer(hitEntity)
-                        wasPlayer = isPlayer
-                        lastHit = hitEntity
-                        SetEntityAlpha(previewProp, isPlayer and 255 or 150, false)
-                    else
-                        isPlayer = wasPlayer
-                    end
+                local isPlayer = DoesEntityExist(hitEntity) and IsPedAPlayer(hitEntity)
+                
+            
+                if isPlayer then
+                    SetEntityDrawOutlineColor(0, 255, 0, 200) 
                 else
-                    if lastHit then
-                        SetEntityAlpha(previewProp, 150, false)
-                        lastHit = nil
-                        wasPlayer = false
-                    end
+                    SetEntityDrawOutlineColor(255, 255, 255, 150)
                 end
+             
 
-                if IsControlJustPressed(0, 38) then
+                if IsControlJustPressed(0, 38) then 
                     if isPlayer then
                         local targetId = GetPlayerServerId(NetworkGetPlayerIndexFromPed(hitEntity))
-                        local dist = #(GetEntityCoords(ped) - GetEntityCoords(hitEntity))
-                        
-                        if dist <= Settings.MaxGiveDistance then
-                            exports.ox_inventory:giveItemToTarget(targetId, currentGiveData.slot, currentGiveData.count)
-                            if DoesEntityExist(previewProp) then DeleteEntity(previewProp) end
-                            givingItem = false
-                            currentGiveData = {}
-                            lib.hideTextUI()
-                            break
-                        else
-                            lib.notify({description = 'Too far from player', type = 'error'})
-                        end
+                        exports.ox_inventory:giveItemToTarget(targetId, currentGiveData.slot, currentGiveData.count)
                     else
-                        local success = lib.callback.await('LNS_ItemThrowing:placeItem', false, {
-                            coords = coords,
-                            rotation = vec3(0.0, 0.0, propRotation),
-                            itemName = currentGiveData.itemName,
-                            slot = currentGiveData.slot,
-                            propModel = currentGiveData.propModel
+                        lib.callback.await('LNS_ItemThrowing:placeItem', false, {
+                            coords = coords, rotation = vec3(0.0, 0.0, propRotation),
+                            itemName = currentGiveData.itemName, slot = currentGiveData.slot,
+                            amount = currentGiveData.count, propModel = currentGiveData.propModel
                         })
-
-                        if success then
-                            if DoesEntityExist(previewProp) then DeleteEntity(previewProp) end
-                            givingItem = false
-                            currentGiveData = {}
-                            lib.hideTextUI()
-                            lib.notify({description = 'Item placed', type = 'success'})
-                        else
-                            lib.notify({description = 'Failed to place item', type = 'error'})
-                        end
-                        break
                     end
-                end
-
-                if IsControlJustPressed(0, 47) then
+                    
                     if DoesEntityExist(previewProp) then DeleteEntity(previewProp) end
-                    lib.hideTextUI()
-                    
-                    local giveData = currentGiveData
-                    currentGiveData = {}
                     givingItem = false
-                    Wait(250)
-                    
-                    MakeItemThrowable(giveData.itemName, giveData.propModel, giveData.slot)
+                    lib.hideTextUI()
                     break
                 end
-            else
-                local offset = GetOffsetFromEntityInWorldCoords(ped, 0.0, 2.0, 0.0)
-                SetEntityCoords(previewProp, offset.x, offset.y, offset.z, false, false, false, false)
-                SetEntityRotation(previewProp, 0.0, 0.0, propRotation, 2, true)
-                
-                if lastHit then
-                    lastHit = nil
-                    wasPlayer = false
+
+                if IsControlJustPressed(0, 47) then 
+                    if DoesEntityExist(previewProp) then DeleteEntity(previewProp) end
+                    lib.hideTextUI()
+                    local data = currentGiveData
+                    givingItem = false
+                    Wait(200)
+                    MakeItemThrowable(data.itemName, data.propModel, data.slot)
+                    break
                 end
             end
 
-            if IsControlJustPressed(0, 73) then
+            if IsControlJustPressed(0, 73) then 
                 if DoesEntityExist(previewProp) then DeleteEntity(previewProp) end
                 givingItem = false
-                currentGiveData = {}
                 lib.hideTextUI()
-                lib.notify({description = 'Give cancelled', type = 'inform'})
                 break
             end
-            
-            Wait(0)
         end
     end)
 end
 
-exports('throwItem', function(data)
-    local itemName, slot
-    
-    if type(data) == 'number' then
-        slot = data
-        local inv = exports.ox_inventory:GetPlayerItems()
-        if inv and inv[slot] then
-            itemName = inv[slot].name
-        end
-    elseif type(data) == 'table' and data.name then
-        itemName = data.name
-        slot = data.slot
-    end
-    
-    if not itemName then
-        return lib.notify({description = 'Invalid item data', type = 'error'})
-    end
-    
-    local propModel = Settings.ItemModels[itemName]
-    if not propModel then
-        return lib.notify({description = 'This item cannot be thrown', type = 'error'})
-    end
-    
-    MakeItemThrowable(itemName, propModel, slot)
-end)
+
 
 exports('startGiveMode', function(itemName, slot, count)
     StartGiveMode(itemName, slot, count)
@@ -375,27 +353,49 @@ end)
 
 RegisterNetEvent('LNS_ItemThrowing:registerTarget', function(propId, netId)
     CreateThread(function()
-        local entity
         local timeout = GetGameTimer() + 5000
-
-        repeat
-            entity = NetworkGetEntityFromNetworkId(netId)
+        while not NetworkDoesNetworkIdExist(netId) do
             Wait(100)
-        until DoesEntityExist(entity) or GetGameTimer() > timeout
+            if GetGameTimer() > timeout then return end
+        end
 
+        local entity = NetToObj(netId)
         if not DoesEntityExist(entity) then return end
 
-        exports.ox_target:addLocalEntity(entity, {
-            {
-                name = 'pickup_thrown_item',
-                icon = 'fas fa-hand-paper',
-                label = 'Pick Up Item',
-                distance = 2.0,
-                onSelect = function()
-                    TriggerEvent('LNS_ItemThrowing:clientPickupItem', propId)
+        local modelHash = GetEntityModel(entity)
+        local isWeapon = false
+        local foundLabel = nil
+
+        
+        for itemName, propModel in pairs(Settings.ItemModels) do
+            if GetHashKey(propModel) == modelHash then
+                if string.find(itemName:upper(), "WEAPON_") then
+                    isWeapon = true
+                    
+                    
+                    local itemData = exports.ox_inventory:Items(itemName)
+                    foundLabel = itemData and itemData.label or itemName
+                    break
                 end
-            }
-        })
+            end
+        end
+
+        if isWeapon then
+            
+            startItemPoint(propId, entity, netId, foundLabel)
+        else
+            exports.ox_target:addLocalEntity(entity, {
+                {
+                    name = 'pickup_thrown_item',
+                    icon = 'fas fa-hand-paper',
+                    label = 'Pick Up Item',
+                    distance = 2.0,
+                    onSelect = function()
+                        TriggerEvent('LNS_ItemThrowing:clientPickupItem', propId)
+                    end
+                }
+            })
+        end
     end)
 end)
 
@@ -403,8 +403,10 @@ RegisterNetEvent('LNS_ItemThrowing:createPlacedProp', function(data)
     CreateThread(function()
         lib.requestModel(data.propModel, 5000)
 
+       
         local prop = CreateObject(data.propModel, data.coords.x, data.coords.y, data.coords.z, true, true, true)
-
+        SetEntityAsMissionEntity(prop, true, true)
+        
         if data.rotation then
             SetEntityRotation(prop, data.rotation.x, data.rotation.y, data.rotation.z, 2, true)
         end
@@ -412,8 +414,10 @@ RegisterNetEvent('LNS_ItemThrowing:createPlacedProp', function(data)
         FreezeEntityPosition(prop, true)
         SetEntityCollision(prop, true, true)
         
-        NetworkRegisterEntityAsNetworked(prop)
-        local netId = NetworkGetNetworkIdFromEntity(prop)
+       
+        local netId = ObjToNet(prop)
+        SetNetworkIdExistsOnAllMachines(netId, true)
+        SetNetworkIdCanMigrate(netId, true)
 
         TriggerServerEvent('LNS_ItemThrowing:updatePlacedPropNetId', data.propId, netId)
         TriggerServerEvent('LNS_ItemThrowing:broadcastPlacedProp', data.propId, netId)
@@ -421,9 +425,19 @@ RegisterNetEvent('LNS_ItemThrowing:createPlacedProp', function(data)
 end)
 
 RegisterNetEvent('LNS_ItemThrowing:removeProp', function(netId)
-    local entity = NetworkGetEntityFromNetworkId(netId)
-    if DoesEntityExist(entity) then
-        exports.ox_target:removeLocalEntity(entity)
-        DeleteEntity(entity)
+   
+    if droppedItems[netId] then
+        droppedItems[netId]:remove()
+        droppedItems[netId] = nil
+        lib.hideTextUI()
+    end
+
+    
+    if NetworkDoesNetworkIdExist(netId) then
+        local entity = NetToObj(netId)
+        if DoesEntityExist(entity) then
+            exports.ox_target:removeLocalEntity(entity)
+            DeleteEntity(entity)
+        end
     end
 end)
