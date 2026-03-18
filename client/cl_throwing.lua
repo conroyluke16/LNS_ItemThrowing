@@ -66,8 +66,16 @@ local function MakeItemThrowable(itemName, propModel, slot)
         AttachEntityToEntity(attachedProp, ped, bone, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, true, true, false, true, 1, true)
     end
     
-    throwingItem = true
-    currentThrowData = {itemName = itemName, propModel = propModel, slot = slot}
+
+throwingItem = true
+local inventory = exports.ox_inventory:GetPlayerItems() 
+local slotData = inventory[slot] 
+currentThrowData = {
+    itemName = itemName, 
+    propModel = propModel, 
+    slot = slot, 
+    metadata = slotData.metadata 
+}
 
     lib.showTextUI('[X] Cancel Throw', {icon = 'hand'})
 
@@ -151,10 +159,11 @@ local function MakeItemThrowable(itemName, propModel, slot)
 
                 local netId = NetworkGetNetworkIdFromEntity(flyingProp)
                 local throwData = {
-                    itemName = currentThrowData.itemName,
-                    slot = currentThrowData.slot,
-                    amount = currentGiveData.count or 1
-                }
+    itemName = currentThrowData.itemName,
+    slot = currentThrowData.slot,
+    amount = 1, 
+    metadata = currentThrowData.metadata 
+}
 
                 CreateThread(function()
                     local landed = false
@@ -188,7 +197,8 @@ local function MakeItemThrowable(itemName, propModel, slot)
     itemName = throwData.itemName,
     slot = throwData.slot,
     amount = throwData.amount,
-    netId = netId
+    netId = netId,
+    metadata = throwData.metadata 
 })
 
 
@@ -231,7 +241,7 @@ function StartGiveMode(itemName, slot, count)
     end
     
     givingItem = true
-    currentGiveData = {itemName = itemName, slot = slot, count = count, propModel = propModel}
+    currentGiveData = {itemName = itemName, slot = slot, count = count, propModel = propModel, metadata = slotData.metadata}
     lib.requestModel(propModel, 5000)
     
     previewProp = CreateObject(propModel, 0, 0, 0, false, false, false)
@@ -296,10 +306,14 @@ function StartGiveMode(itemName, slot, count)
                         exports.ox_inventory:giveItemToTarget(targetId, currentGiveData.slot, currentGiveData.count)
                     else
                         lib.callback.await('LNS_ItemThrowing:placeItem', false, {
-                            coords = coords, rotation = vec3(0.0, 0.0, propRotation),
-                            itemName = currentGiveData.itemName, slot = currentGiveData.slot,
-                            amount = currentGiveData.count, propModel = currentGiveData.propModel
-                        })
+    coords = coords, 
+    rotation = vec3(0.0, 0.0, propRotation),
+    itemName = currentGiveData.itemName, 
+    slot = currentGiveData.slot,
+    amount = currentGiveData.count, 
+    propModel = currentGiveData.propModel,
+    metadata = currentGiveData.metadata 
+})
                     end
                     
                     if DoesEntityExist(previewProp) then DeleteEntity(previewProp) end
