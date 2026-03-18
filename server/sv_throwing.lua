@@ -76,7 +76,8 @@ lib.callback.register('LNS_ItemThrowing:createProp', function(source, data)
         netId = data.netId,
         itemName = data.itemName,
         coords = data.coords,
-        amount = amount
+        amount = amount,
+        metadata = data.metadata
     }
 
     TriggerClientEvent('LNS_ItemThrowing:registerTarget', -1, propId, data.netId)
@@ -129,7 +130,8 @@ lib.callback.register('LNS_ItemThrowing:placeItem', function(source, data)
         netId = nil,
         itemName = data.itemName,
         coords = data.coords,
-        amount = amount
+        amount = amount,
+        metadata = data.metadata
     }
 
     TriggerClientEvent('LNS_ItemThrowing:createPlacedProp', source, {
@@ -162,11 +164,11 @@ lib.callback.register('LNS_ItemThrowing:pickupItem', function(source, propId)
         return false
     end
 
-    if exports.ox_inventory:AddItem(source, prop.itemName, prop.amount or 1) then
-        lib.notify(source, { type = 'success', description = 'Item picked up' })
-        destroyProp(propId)
-        return true
-    end
+    if exports.ox_inventory:AddItem(source, prop.itemName, prop.amount or 1, prop.metadata) then 
+    lib.notify(source, { type = 'success', description = 'Item picked up' })
+    destroyProp(propId)
+    return true
+end
 
     lib.notify(source, { type = 'error', description = 'Inventory full' })
     return false
